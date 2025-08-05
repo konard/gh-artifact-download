@@ -1,11 +1,9 @@
-# .gitpod.Dockerfile
-
-FROM gitpod/workspace-full
+FROM gitpod/workspace-full:latest
 
 # Install gh
-RUN apt-get update && \
-    apt-get install -y gh && \
-    rm -rf /var/lib/apt/lists/*
+RUN sudo apt-get update && \
+    sudo apt-get install -y gh && \
+    sudo rm -rf /var/lib/apt/lists/*
 
 # Install Bun
 RUN curl -fsSL https://bun.sh/install | bash
@@ -15,4 +13,4 @@ ENV BUN_INSTALL="/home/gitpod/.bun"
 ENV PATH="${BUN_INSTALL}/bin:${PATH}"
 
 # Install Claude Code
-RUN bun install -g @anthropic-ai/claude-code
+RUN $BUN_INSTALL/bin/bun install -g @anthropic-ai/claude-code
