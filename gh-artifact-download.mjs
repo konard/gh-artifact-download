@@ -1,13 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, execSync } from 'child_process';
-import { promisify } from 'util';
-import { basename } from 'path';
-import { createWriteStream } from 'fs';
 import https from 'https';
-import http from 'http';
-
-const execAsync = promisify(execSync);
 
 function checkCommand(command) {
   try {
@@ -15,6 +9,19 @@ function checkCommand(command) {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function getWorkflowArtifacts(owner, repo, runId) {
+  try {
+    const artifactsData = JSON.parse(
+      execSync(`gh api -H "Accept: application/vnd.github+json" /repos/${owner}/${repo}/actions/runs/${runId}/artifacts`, 
+        { encoding: 'utf8' })
+    );
+    
+    return artifactsData.artifacts || [];
+  } catch (error) {
+    throw new Error(`Failed to retrieve workflow artifacts: ${error.message}`);
   }
 }
 
@@ -95,39 +102,90 @@ async function main() {
 
   // Check input
   if (process.argv.length < 3) {
-    console.error(`Usage: ${process.argv[1]} <GitHub artifact URL>`);
+    console.error(`Usage: ${process.argv[1]} <GitHub artifact or workflow run URL>`);
     process.exit(1);
   }
 
-  const artifactUrl = process.argv[2];
+  const url = process.argv[2];
 
-  // Extract owner, repo, artifact_id
-  const match = artifactUrl.match(/github\.com\/([^\/]+)\/([^\/]+)\/actions\/.*\/artifacts\/([0-9]+)/);
-  if (!match) {
-    console.error('❌ Invalid artifact URL format.');
+  // Try to match artifact URL first
+  const artifactMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/actions\/.*\/artifacts\/([0-9]+)/);
+  
+  // Try to match workflow run URL
+  const runMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/actions\/runs\/([0-9]+)/);
+  
+  if (!artifactMatch && !runMatch) {
+    console.error('❌ Invalid URL format. Expected artifact or workflow run URL.');
     process.exit(1);
   }
 
-  const [, owner, repo, artifactId] = match;
+  if (artifactMatch) {
+    // Handle single artifact download
+    const [, owner, repo, artifactId] = artifactMatch;
 
-  console.log(`🔍 Owner: ${owner}`);
-  console.log(`📦 Repo: ${repo}`);
-  console.log(`🆔 Artifact ID: ${artifactId}`);
+    console.log(`🔍 Owner: ${owner}`);
+    console.log(`📦 Repo: ${repo}`);
+    console.log(`🆔 Artifact ID: ${artifactId}`);
 
-  try {
-    // Get artifact info and signed URL
-    const { signedUrl, originalName } = await getArtifactInfo(owner, repo, artifactId);
+    try {
+      // Get artifact info and signed URL
+      const { signedUrl, originalName } = await getArtifactInfo(owner, repo, artifactId);
 
-    console.log(`📂 Output file: ${originalName}`);
+      console.log(`📂 Output file: ${originalName}`);
 
-    // Download using aria2c
-    console.log('⬇️  Downloading with aria2c...');
-    await downloadWithAria2c(signedUrl, originalName);
+      // Download using aria2c
+      console.log('⬇️  Downloading with aria2c...');
+      await downloadWithAria2c(signedUrl, originalName);
 
-    console.log(`✅ Download complete: ${originalName}`);
-  } catch (error) {
-    console.error(`❌ Error: ${error.message}`);
-    process.exit(1);
+      console.log(`✅ Download complete: ${originalName}`);
+    } catch (error) {
+      console.error(`❌ Error: ${error.message}`);
+      process.exit(1);
+    }
+  } else if (runMatch) {
+    // Handle workflow run - list all artifacts
+    const [, owner, repo, runId] = runMatch;
+
+    console.log(`🔍 Owner: ${owner}`);
+    console.log(`📦 Repo: ${repo}`);
+    console.log(`🏃 Workflow Run ID: ${runId}`);
+
+    try {
+      const artifacts = await getWorkflowArtifacts(owner, repo, runId);
+      
+      if (artifacts.length === 0) {
+        console.log('📭 No artifacts found for this workflow run.');
+        return;
+      }
+      
+      if (artifacts.length === 1) {
+        // Single artifact - download it directly
+        const artifact = artifacts[0];
+        console.log(`📂 Found single artifact: ${artifact.name}`);
+        
+        const { signedUrl, originalName } = await getArtifactInfo(owner, repo, artifact.id);
+        
+        console.log('⬇️  Downloading with aria2c...');
+        await downloadWithAria2c(signedUrl, originalName);
+        
+        console.log(`✅ Download complete: ${originalName}`);
+      } else {
+        // Multiple artifacts - list them
+        console.log(`\n📋 Found ${artifacts.length} artifacts:`);
+        console.log('\nTo download a specific artifact, use one of these URLs:');
+        
+        artifacts.forEach((artifact, index) => {
+          const artifactUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${artifact.id}`;
+          console.log(`\n${index + 1}. ${artifact.name}`);
+          console.log(`   Size: ${(artifact.size_in_bytes / (1024 * 1024)).toFixed(2)} MB`);
+          console.log(`   Created: ${new Date(artifact.created_at).toLocaleString()}`);
+          console.log(`   URL: ${artifactUrl}`);
+        });
+      }
+    } catch (error) {
+      console.error(`❌ Error: ${error.message}`);
+      process.exit(1);
+    }
   }
 }
 
