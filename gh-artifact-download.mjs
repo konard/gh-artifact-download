@@ -18,7 +18,7 @@ function checkCommand(command) {
   }
 }
 
-async function getSignedUrl(owner, repo, artifactId) {
+async function getArtifactInfo(owner, repo, artifactId) {
   try {
     // Get artifact info
     const artifactData = JSON.parse(
@@ -27,6 +27,8 @@ async function getSignedUrl(owner, repo, artifactId) {
     );
     
     const downloadUrl = artifactData.archive_download_url;
+    const originalName = artifactData.name;
+    
     if (!downloadUrl) {
       throw new Error('No download URL found in artifact data');
     }
@@ -35,7 +37,7 @@ async function getSignedUrl(owner, repo, artifactId) {
     const token = execSync('gh auth token', { encoding: 'utf8' }).trim();
 
     // Follow redirect to get signed URL
-    return new Promise((resolve, reject) => {
+    const signedUrl = await new Promise((resolve, reject) => {
       const request = https.request(downloadUrl, {
         method: 'HEAD',
         headers: {
@@ -54,8 +56,10 @@ async function getSignedUrl(owner, repo, artifactId) {
       request.on('error', reject);
       request.end();
     });
+
+    return { signedUrl, originalName };
   } catch (error) {
-    throw new Error(`Failed to retrieve signed blob URL: ${error.message}`);
+    throw new Error(`Failed to retrieve artifact info: ${error.message}`);
   }
 }
 
@@ -111,18 +115,16 @@ async function main() {
   console.log(`🆔 Artifact ID: ${artifactId}`);
 
   try {
-    // Fetch signed Azure blob URL
-    const signedUrl = await getSignedUrl(owner, repo, artifactId);
+    // Get artifact info and signed URL
+    const { signedUrl, originalName } = await getArtifactInfo(owner, repo, artifactId);
 
-    // Extract filename from URL
-    const filename = basename(signedUrl.split('?')[0]);
-    console.log(`📂 Output file: ${filename}`);
+    console.log(`📂 Output file: ${originalName}`);
 
     // Download using aria2c
     console.log('⬇️  Downloading with aria2c...');
-    await downloadWithAria2c(signedUrl, filename);
+    await downloadWithAria2c(signedUrl, originalName);
 
-    console.log(`✅ Download complete: ${filename}`);
+    console.log(`✅ Download complete: ${originalName}`);
   } catch (error) {
     console.error(`❌ Error: ${error.message}`);
     process.exit(1);
