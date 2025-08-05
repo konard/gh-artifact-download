@@ -1,15 +1,2 @@
-# .gitpod.yml
-
 image:
   file: .gitpod.Dockerfile
-
-tasks:
-  - init: |
-      echo "✅ Initializing workspace..."
-
-      # Confirm installations
-      echo "🔍 Versions:"
-      gh --version
-      bun --version
-      claude --version
-      
