@@ -1,0 +1,26 @@
+# .gitpod.yml
+
+image:
+  file: .gitpod.Dockerfile
+
+tasks:
+  - init: |
+      echo "✅ Initializing workspace..."
+
+      # Ensure bun is in path (should already be installed via Dockerfile)
+      bun --version
+
+      # Install Claude CLI via bun
+      echo "📦 Installing Claude CLI..."
+      bun add -g claude
+
+      # Install GitHub CLI
+      echo "🔧 Installing GitHub CLI..."
+      sudo apt-get update
+      sudo apt-get install -y gh
+
+      # Confirm installations
+      echo "🔍 Versions:"
+      bun --version
+      claude --version || echo "Claude installed"
+      gh --version
