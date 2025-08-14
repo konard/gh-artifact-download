@@ -2,6 +2,28 @@
 
 import { spawn, execSync } from 'child_process';
 import https from 'https';
+import { unlinkSync } from 'fs';
+
+function unzipFile(zipFile, destDir = '.') {
+  return new Promise((resolve, reject) => {
+    const unzip = spawn('unzip', ['-o', zipFile, '-d', destDir], {
+      stdio: 'inherit'
+    });
+    unzip.on('close', (code) => {
+      if (code === 0) {
+        try {
+          unlinkSync(zipFile); // Remove the zip file after extraction
+        } catch (e) {
+          // Ignore error if file can't be deleted
+        }
+        resolve();
+      } else {
+        reject(new Error(`unzip exited with code ${code}`));
+      }
+    });
+    unzip.on('error', reject);
+  });
+}
 
 function checkCommand(command) {
   try {
@@ -15,10 +37,10 @@ function checkCommand(command) {
 async function getWorkflowArtifacts(owner, repo, runId) {
   try {
     const artifactsData = JSON.parse(
-      execSync(`gh api -H "Accept: application/vnd.github+json" /repos/${owner}/${repo}/actions/runs/${runId}/artifacts`, 
+      execSync(`gh api -H "Accept: application/vnd.github+json" /repos/${owner}/${repo}/actions/runs/${runId}/artifacts`,
         { encoding: 'utf8' })
     );
-    
+
     return artifactsData.artifacts || [];
   } catch (error) {
     throw new Error(`Failed to retrieve workflow artifacts: ${error.message}`);
@@ -29,13 +51,13 @@ async function getArtifactInfo(owner, repo, artifactId) {
   try {
     // Get artifact info
     const artifactData = JSON.parse(
-      execSync(`gh api -H "Accept: application/vnd.github+json" /repos/${owner}/${repo}/actions/artifacts/${artifactId}`, 
+      execSync(`gh api -H "Accept: application/vnd.github+json" /repos/${owner}/${repo}/actions/artifacts/${artifactId}`,
         { encoding: 'utf8' })
     );
-    
+
     const downloadUrl = artifactData.archive_download_url;
     const originalName = artifactData.name;
-    
+
     if (!downloadUrl) {
       throw new Error('No download URL found in artifact data');
     }
@@ -59,7 +81,7 @@ async function getArtifactInfo(owner, repo, artifactId) {
           reject(new Error('No redirect location found'));
         }
       });
-      
+
       request.on('error', reject);
       request.end();
     });
@@ -110,10 +132,10 @@ async function main() {
 
   // Try to match artifact URL first
   const artifactMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/actions\/.*\/artifacts\/([0-9]+)/);
-  
+
   // Try to match workflow run URL
   const runMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/actions\/runs\/([0-9]+)/);
-  
+
   if (!artifactMatch && !runMatch) {
     console.error('❌ Invalid URL format. Expected artifact or workflow run URL.');
     process.exit(1);
@@ -138,6 +160,11 @@ async function main() {
       await downloadWithAria2c(signedUrl, originalName);
 
       console.log(`✅ Download complete: ${originalName}`);
+
+      // Unzip the file
+      console.log('🗜️  Unzipping...');
+      await unzipFile(originalName);
+      console.log('✅ Unzip complete.');
     } catch (error) {
       console.error(`❌ Error: ${error.message}`);
       process.exit(1);
@@ -152,28 +179,32 @@ async function main() {
 
     try {
       const artifacts = await getWorkflowArtifacts(owner, repo, runId);
-      
+
       if (artifacts.length === 0) {
         console.log('📭 No artifacts found for this workflow run.');
         return;
       }
-      
+
       if (artifacts.length === 1) {
         // Single artifact - download it directly
         const artifact = artifacts[0];
         console.log(`📂 Found single artifact: ${artifact.name}`);
-        
+
         const { signedUrl, originalName } = await getArtifactInfo(owner, repo, artifact.id);
-        
+
         console.log('⬇️  Downloading with aria2c...');
         await downloadWithAria2c(signedUrl, originalName);
-        
+
         console.log(`✅ Download complete: ${originalName}`);
+        // Unzip the file
+        console.log('🗜️  Unzipping...');
+        await unzipFile(originalName);
+        console.log('✅ Unzip complete.');
       } else {
         // Multiple artifacts - list them
         console.log(`\n📋 Found ${artifacts.length} artifacts:`);
         console.log('\nTo download a specific artifact, use one of these URLs:');
-        
+
         artifacts.forEach((artifact, index) => {
           const artifactUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${artifact.id}`;
           console.log(`\n${index + 1}. ${artifact.name}`);
