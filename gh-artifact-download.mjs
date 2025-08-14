@@ -3,8 +3,10 @@
 import { spawn, execSync } from 'child_process';
 import https from 'https';
 import { unlinkSync } from 'fs';
+import os from 'os';
+import path from 'path';
 
-function unzipFile(zipFile, destDir = '.') {
+function unzipFile(zipFile, destDir) {
   return new Promise((resolve, reject) => {
     const unzip = spawn('unzip', ['-o', zipFile, '-d', destDir], {
       stdio: 'inherit'
@@ -153,17 +155,16 @@ async function main() {
       // Get artifact info and signed URL
       const { signedUrl, originalName } = await getArtifactInfo(owner, repo, artifactId);
 
-      console.log(`📂 Output file: ${originalName}`);
+      // Prepare temp file path
+      const tempZip = path.join(os.tmpdir(), `gh-artifact-${artifactId}-${Date.now()}.zip`);
+      console.log(`⬇️  Downloading to temp file: ${tempZip}`);
+      await downloadWithAria2c(signedUrl, tempZip);
+      console.log(`✅ Download complete: ${tempZip}`);
 
-      // Download using aria2c
-      console.log('⬇️  Downloading with aria2c...');
-      await downloadWithAria2c(signedUrl, originalName);
-
-      console.log(`✅ Download complete: ${originalName}`);
-
-      // Unzip the file
-      console.log('🗜️  Unzipping...');
-      await unzipFile(originalName);
+      // Unzip into target directory
+      const targetDir = path.join(process.cwd(), originalName);
+      console.log(`🗜️  Unzipping into: ${targetDir}`);
+      await unzipFile(tempZip, targetDir);
       console.log('✅ Unzip complete.');
     } catch (error) {
       console.error(`❌ Error: ${error.message}`);
@@ -192,13 +193,16 @@ async function main() {
 
         const { signedUrl, originalName } = await getArtifactInfo(owner, repo, artifact.id);
 
-        console.log('⬇️  Downloading with aria2c...');
-        await downloadWithAria2c(signedUrl, originalName);
+        // Prepare temp file path
+        const tempZip = path.join(os.tmpdir(), `gh-artifact-${artifact.id}-${Date.now()}.zip`);
+        console.log(`⬇️  Downloading to temp file: ${tempZip}`);
+        await downloadWithAria2c(signedUrl, tempZip);
+        console.log(`✅ Download complete: ${tempZip}`);
 
-        console.log(`✅ Download complete: ${originalName}`);
-        // Unzip the file
-        console.log('🗜️  Unzipping...');
-        await unzipFile(originalName);
+        // Unzip into target directory
+        const targetDir = path.join(process.cwd(), originalName);
+        console.log(`🗜️  Unzipping into: ${targetDir}`);
+        await unzipFile(tempZip, targetDir);
         console.log('✅ Unzip complete.');
       } else {
         // Multiple artifacts - list them
