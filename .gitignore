@@ -1,6 +1,8 @@
 **/*
 
 !.gitignore
+!.gitpod.Dockerfile
+!.gitpod.yml
 !.gh-artifact-download.mjs
 !LICENSE
 !README.md
