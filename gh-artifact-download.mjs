@@ -8,22 +8,29 @@ import path from 'path';
 
 function unzipFile(zipFile, destDir) {
   return new Promise((resolve, reject) => {
-    const unzip = spawn('unzip', ['-o', zipFile, '-d', destDir], {
-      stdio: 'inherit'
-    });
-    unzip.on('close', (code) => {
-      if (code === 0) {
-        try {
-          unlinkSync(zipFile); // Remove the zip file after extraction
-        } catch (e) {
-          // Ignore error if file can't be deleted
-        }
-        resolve();
-      } else {
-        reject(new Error(`unzip exited with code ${code}`));
+    // Check if zip file exists before unzipping
+    import('fs').then(fs => {
+      if (!fs.existsSync(zipFile)) {
+        reject(new Error(`Zip file does not exist: ${zipFile}`));
+        return;
       }
+      const unzip = spawn('unzip', ['-o', zipFile, '-d', destDir], {
+        stdio: 'inherit'
+      });
+      unzip.on('close', (code) => {
+        if (code === 0) {
+          try {
+            unlinkSync(zipFile); // Remove the zip file after extraction
+          } catch (e) {
+            // Ignore error if file can't be deleted
+          }
+          resolve();
+        } else {
+          reject(new Error(`unzip exited with code ${code} (file: ${zipFile})`));
+        }
+      });
+      unzip.on('error', reject);
     });
-    unzip.on('error', reject);
   });
 }
 
@@ -96,7 +103,11 @@ async function getArtifactInfo(owner, repo, artifactId) {
 
 function downloadWithAria2c(url, filename) {
   return new Promise((resolve, reject) => {
-    const aria2c = spawn('aria2c', ['-x', '16', '-s', '16', '-o', filename, url], {
+    // Extract directory and filename from the full path
+    const dir = path.dirname(filename);
+    const file = path.basename(filename);
+    
+    const aria2c = spawn('aria2c', ['-x', '16', '-s', '16', '-d', dir, '-o', file, url], {
       stdio: 'inherit'
     });
 
@@ -156,16 +167,20 @@ async function main() {
       const { signedUrl, originalName } = await getArtifactInfo(owner, repo, artifactId);
 
       // Prepare temp file path
-      const tempZip = path.join(os.tmpdir(), `gh-artifact-${artifactId}-${Date.now()}.zip`);
+      let tempZip = path.join(os.tmpdir(), `gh-artifact-${artifactId}-${Date.now()}.zip`);
+      tempZip = path.resolve(tempZip);
       console.log(`⬇️  Downloading to temp file: ${tempZip}`);
       await downloadWithAria2c(signedUrl, tempZip);
       console.log(`✅ Download complete: ${tempZip}`);
 
-      // Unzip into target directory
-      const targetDir = path.join(process.cwd(), originalName);
-      console.log(`🗜️  Unzipping into: ${targetDir}`);
+      // Unzip into current directory
+      const targetDir = process.cwd();
+      console.log(`🗜️  Extracting to: ${targetDir}`);
       await unzipFile(tempZip, targetDir);
-      console.log('✅ Unzip complete.');
+      
+      // Show final file path
+      const finalPath = path.join(targetDir, originalName);
+      console.log(`✅ Extracted to: ${finalPath}`);
     } catch (error) {
       console.error(`❌ Error: ${error.message}`);
       process.exit(1);
@@ -194,16 +209,20 @@ async function main() {
         const { signedUrl, originalName } = await getArtifactInfo(owner, repo, artifact.id);
 
         // Prepare temp file path
-        const tempZip = path.join(os.tmpdir(), `gh-artifact-${artifact.id}-${Date.now()}.zip`);
+        let tempZip = path.join(os.tmpdir(), `gh-artifact-${artifact.id}-${Date.now()}.zip`);
+        tempZip = path.resolve(tempZip);
         console.log(`⬇️  Downloading to temp file: ${tempZip}`);
         await downloadWithAria2c(signedUrl, tempZip);
         console.log(`✅ Download complete: ${tempZip}`);
 
-        // Unzip into target directory
-        const targetDir = path.join(process.cwd(), originalName);
-        console.log(`🗜️  Unzipping into: ${targetDir}`);
+        // Unzip into current directory
+        const targetDir = process.cwd();
+        console.log(`🗜️  Extracting to: ${targetDir}`);
         await unzipFile(tempZip, targetDir);
-        console.log('✅ Unzip complete.');
+        
+        // Show final file path
+        const finalPath = path.join(targetDir, originalName);
+        console.log(`✅ Extracted to: ${finalPath}`);
       } else {
         // Multiple artifacts - list them
         console.log(`\n📋 Found ${artifacts.length} artifacts:`);
