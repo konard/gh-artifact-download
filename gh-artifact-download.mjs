@@ -1,246 +1,103 @@
 #!/usr/bin/env node
 
-import { spawn, execSync } from 'child_process';
-import https from 'https';
 import { unlinkSync } from 'fs';
-import os from 'os';
 import path from 'path';
+import os from 'os';
 
-function unzipFile(zipFile, destDir) {
-  return new Promise((resolve, reject) => {
-    // Check if zip file exists before unzipping
-    import('fs').then(fs => {
-      if (!fs.existsSync(zipFile)) {
-        reject(new Error(`Zip file does not exist: ${zipFile}`));
-        return;
-      }
-      const unzip = spawn('unzip', ['-o', zipFile, '-d', destDir], {
-        stdio: 'inherit'
-      });
-      unzip.on('close', (code) => {
-        if (code === 0) {
-          try {
-            unlinkSync(zipFile); // Remove the zip file after extraction
-          } catch (e) {
-            // Ignore error if file can't be deleted
-          }
-          resolve();
-        } else {
-          reject(new Error(`unzip exited with code ${code} (file: ${zipFile})`));
-        }
-      });
-      unzip.on('error', reject);
-    });
-  });
+// Dynamically import command-stream using use-m
+const { use } = eval(await (await fetch('https://unpkg.com/use-m/use.js')).text());
+const { $, sh } = await use('command-stream');
+
+// Check dependencies - using system which due to built-in which issue
+try {
+  await sh('/usr/bin/which gh', { mirror: false });
+} catch {
+  console.error('❌ GitHub CLI (gh) not found. Please install it.');
+  process.exit(1);
 }
 
-function checkCommand(command) {
-  try {
-    execSync(`command -v ${command}`, { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
+try {
+  await sh('/usr/bin/which aria2c', { mirror: false });
+} catch {
+  console.error("❌ aria2c not found. Please install it (e.g., 'brew install aria2').");
+  process.exit(1);
 }
 
-async function getWorkflowArtifacts(owner, repo, runId) {
-  try {
-    const artifactsData = JSON.parse(
-      execSync(`gh api -H "Accept: application/vnd.github+json" /repos/${owner}/${repo}/actions/runs/${runId}/artifacts`,
-        { encoding: 'utf8' })
-    );
-
-    return artifactsData.artifacts || [];
-  } catch (error) {
-    throw new Error(`Failed to retrieve workflow artifacts: ${error.message}`);
-  }
+// Check input
+if (process.argv.length < 3) {
+  console.error(`Usage: ${process.argv[1]} <GitHub artifact or workflow run URL>`);
+  process.exit(1);
 }
 
-async function getArtifactInfo(owner, repo, artifactId) {
-  try {
-    // Get artifact info
-    const artifactData = JSON.parse(
-      execSync(`gh api -H "Accept: application/vnd.github+json" /repos/${owner}/${repo}/actions/artifacts/${artifactId}`,
-        { encoding: 'utf8' })
-    );
+const url = process.argv[2];
+const artifactMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/actions\/.*\/artifacts\/([0-9]+)/);
+const runMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/actions\/runs\/([0-9]+)/);
 
-    const downloadUrl = artifactData.archive_download_url;
-    const originalName = artifactData.name;
-
-    if (!downloadUrl) {
-      throw new Error('No download URL found in artifact data');
-    }
-
-    // Get auth token
-    const token = execSync('gh auth token', { encoding: 'utf8' }).trim();
-
-    // Follow redirect to get signed URL
-    const signedUrl = await new Promise((resolve, reject) => {
-      const request = https.request(downloadUrl, {
-        method: 'HEAD',
-        headers: {
-          'Authorization': `token ${token}`,
-          'User-Agent': 'gh-artifact-download'
-        }
-      }, (res) => {
-        const location = res.headers.location;
-        if (location) {
-          resolve(location);
-        } else {
-          reject(new Error('No redirect location found'));
-        }
-      });
-
-      request.on('error', reject);
-      request.end();
-    });
-
-    return { signedUrl, originalName };
-  } catch (error) {
-    throw new Error(`Failed to retrieve artifact info: ${error.message}`);
-  }
+if (!artifactMatch && !runMatch) {
+  console.error('❌ Invalid URL format. Expected artifact or workflow run URL.');
+  process.exit(1);
 }
 
-function downloadWithAria2c(url, filename) {
-  return new Promise((resolve, reject) => {
-    // Extract directory and filename from the full path
-    const dir = path.dirname(filename);
-    const file = path.basename(filename);
-    
-    const aria2c = spawn('aria2c', ['-x', '16', '-s', '16', '-d', dir, '-o', file, url], {
-      stdio: 'inherit'
-    });
-
-    aria2c.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`aria2c exited with code ${code}`));
-      }
-    });
-
-    aria2c.on('error', reject);
-  });
+async function downloadArtifact(owner, repo, artifactId) {
+  // Get artifact info
+  const artifactData = JSON.parse(
+    (await sh(`gh api -H "Accept: application/vnd.github+json" /repos/${owner}/${repo}/actions/artifacts/${artifactId}`, { mirror: false })).stdout
+  );
+  
+  const token = (await sh('gh auth token', { mirror: false })).stdout.trim();
+  
+  // Get signed URL via curl with redirect
+  const curlResponse = (await sh(`curl -s -I -H "Authorization: token ${token}" -H "User-Agent: gh-artifact-download" ${artifactData.archive_download_url}`, { mirror: false })).stdout;
+  const locationMatch = curlResponse.match(/^location:\s*(.+)$/mi);
+  if (!locationMatch) throw new Error('Failed to get redirect URL');
+  const signedUrl = locationMatch[1].trim();
+  
+  // Download with aria2c - use separate directory and filename
+  const tempDir = os.tmpdir();
+  const tempFile = `gh-artifact-${artifactId}-${Date.now()}.zip`;
+  const tempZip = path.join(tempDir, tempFile);
+  
+  console.log(`⬇️  Downloading to: ${tempZip}`);
+  await $`aria2c -x 16 -s 16 -d ${tempDir} -o ${tempFile} ${signedUrl}`;
+  console.log(`✅ Download complete`);
+  
+  // Extract to current directory
+  const targetDir = process.cwd();
+  console.log(`🗜️  Extracting to: ${targetDir}`);
+  await $`unzip -o ${tempZip} -d ${targetDir}`;
+  unlinkSync(tempZip);
+  
+  console.log(`✅ Extracted to: ${path.join(targetDir, artifactData.name)}`);
 }
 
-async function main() {
-  // Check dependencies
-  if (!checkCommand('gh')) {
-    console.error('❌ GitHub CLI (gh) not found. Please install it.');
-    process.exit(1);
-  }
-
-  if (!checkCommand('aria2c')) {
-    console.error("❌ aria2c not found. Please install it (e.g., 'brew install aria2').");
-    process.exit(1);
-  }
-
-  // Check input
-  if (process.argv.length < 3) {
-    console.error(`Usage: ${process.argv[1]} <GitHub artifact or workflow run URL>`);
-    process.exit(1);
-  }
-
-  const url = process.argv[2];
-
-  // Try to match artifact URL first
-  const artifactMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/actions\/.*\/artifacts\/([0-9]+)/);
-
-  // Try to match workflow run URL
-  const runMatch = url.match(/github\.com\/([^\/]+)\/([^\/]+)\/actions\/runs\/([0-9]+)/);
-
-  if (!artifactMatch && !runMatch) {
-    console.error('❌ Invalid URL format. Expected artifact or workflow run URL.');
-    process.exit(1);
-  }
-
+try {
   if (artifactMatch) {
-    // Handle single artifact download
     const [, owner, repo, artifactId] = artifactMatch;
-
-    console.log(`🔍 Owner: ${owner}`);
-    console.log(`📦 Repo: ${repo}`);
-    console.log(`🆔 Artifact ID: ${artifactId}`);
-
-    try {
-      // Get artifact info and signed URL
-      const { signedUrl, originalName } = await getArtifactInfo(owner, repo, artifactId);
-
-      // Prepare temp file path
-      let tempZip = path.join(os.tmpdir(), `gh-artifact-${artifactId}-${Date.now()}.zip`);
-      tempZip = path.resolve(tempZip);
-      console.log(`⬇️  Downloading to temp file: ${tempZip}`);
-      await downloadWithAria2c(signedUrl, tempZip);
-      console.log(`✅ Download complete: ${tempZip}`);
-
-      // Unzip into current directory
-      const targetDir = process.cwd();
-      console.log(`🗜️  Extracting to: ${targetDir}`);
-      await unzipFile(tempZip, targetDir);
-      
-      // Show final file path
-      const finalPath = path.join(targetDir, originalName);
-      console.log(`✅ Extracted to: ${finalPath}`);
-    } catch (error) {
-      console.error(`❌ Error: ${error.message}`);
-      process.exit(1);
-    }
+    console.log(`🔍 Owner: ${owner}\n📦 Repo: ${repo}\n🆔 Artifact ID: ${artifactId}`);
+    await downloadArtifact(owner, repo, artifactId);
   } else if (runMatch) {
-    // Handle workflow run - list all artifacts
     const [, owner, repo, runId] = runMatch;
-
-    console.log(`🔍 Owner: ${owner}`);
-    console.log(`📦 Repo: ${repo}`);
-    console.log(`🏃 Workflow Run ID: ${runId}`);
-
-    try {
-      const artifacts = await getWorkflowArtifacts(owner, repo, runId);
-
-      if (artifacts.length === 0) {
-        console.log('📭 No artifacts found for this workflow run.');
-        return;
-      }
-
-      if (artifacts.length === 1) {
-        // Single artifact - download it directly
-        const artifact = artifacts[0];
-        console.log(`📂 Found single artifact: ${artifact.name}`);
-
-        const { signedUrl, originalName } = await getArtifactInfo(owner, repo, artifact.id);
-
-        // Prepare temp file path
-        let tempZip = path.join(os.tmpdir(), `gh-artifact-${artifact.id}-${Date.now()}.zip`);
-        tempZip = path.resolve(tempZip);
-        console.log(`⬇️  Downloading to temp file: ${tempZip}`);
-        await downloadWithAria2c(signedUrl, tempZip);
-        console.log(`✅ Download complete: ${tempZip}`);
-
-        // Unzip into current directory
-        const targetDir = process.cwd();
-        console.log(`🗜️  Extracting to: ${targetDir}`);
-        await unzipFile(tempZip, targetDir);
-        
-        // Show final file path
-        const finalPath = path.join(targetDir, originalName);
-        console.log(`✅ Extracted to: ${finalPath}`);
-      } else {
-        // Multiple artifacts - list them
-        console.log(`\n📋 Found ${artifacts.length} artifacts:`);
-        console.log('\nTo download a specific artifact, use one of these URLs:');
-
-        artifacts.forEach((artifact, index) => {
-          const artifactUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${artifact.id}`;
-          console.log(`\n${index + 1}. ${artifact.name}`);
-          console.log(`   Size: ${(artifact.size_in_bytes / (1024 * 1024)).toFixed(2)} MB`);
-          console.log(`   Created: ${new Date(artifact.created_at).toLocaleString()}`);
-          console.log(`   URL: ${artifactUrl}`);
-        });
-      }
-    } catch (error) {
-      console.error(`❌ Error: ${error.message}`);
-      process.exit(1);
+    console.log(`🔍 Owner: ${owner}\n📦 Repo: ${repo}\n🏃 Run ID: ${runId}`);
+    
+    const artifacts = JSON.parse(
+      (await sh(`gh api -H "Accept: application/vnd.github+json" /repos/${owner}/${repo}/actions/runs/${runId}/artifacts`, { mirror: false })).stdout
+    ).artifacts || [];
+    
+    if (artifacts.length === 0) {
+      console.log('📭 No artifacts found.');
+    } else if (artifacts.length === 1) {
+      console.log(`📂 Found single artifact: ${artifacts[0].name}`);
+      await downloadArtifact(owner, repo, artifacts[0].id);
+    } else {
+      console.log(`\n📋 Found ${artifacts.length} artifacts:\n`);
+      artifacts.forEach((a, i) => {
+        console.log(`${i + 1}. ${a.name}`);
+        console.log(`   Size: ${(a.size_in_bytes / (1024 * 1024)).toFixed(2)} MB`);
+        console.log(`   URL: https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${a.id}\n`);
+      });
     }
   }
+} catch (error) {
+  console.error(`❌ Error: ${error.message}`);
+  process.exit(1);
 }
-
-main().catch(console.error);
