@@ -6,7 +6,6 @@ const { use } = eval(await (await fetch('https://unpkg.com/use-m/use.js')).text(
 const os = await use('os');
 const path = await use('path');
 const { unlinkSync } = await use('fs');
-
 const { $, sh } = await use('command-stream');
 
 // Check dependencies - using system which due to built-in which issue
